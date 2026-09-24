@@ -2,12 +2,39 @@ import { prisma } from '../db/prisma';
 import { ParsedBatchReport } from '../types/batch.types';
 
 /**
+ * Prisma error code cho unique constraint violation.
+ * Xảy ra khi 2 request song song cùng INSERT batch mới.
+ */
+const UNIQUE_CONSTRAINT_ERROR = 'P2002';
+const MAX_RETRIES = 3;
+
+/**
  * Upsert 1 batch report vào DB.
- * Nếu batch chưa tồn tại → tạo mới.
- * Nếu machine run (theo unique key machineId + batchNumber + startTime) chưa có → thêm.
- * Nếu đã có → cập nhật.
+ * Có retry tự động khi gặp race condition (unique constraint) do parse song song.
  */
 export async function upsertBatchReport(
+  data: ParsedBatchReport,
+  sourceFile: string
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      await doUpsert(data, sourceFile);
+      return;
+    } catch (e: any) {
+      const isUniqueConstraint = e?.code === UNIQUE_CONSTRAINT_ERROR;
+      const isLastAttempt = attempt === MAX_RETRIES - 1;
+      if (isUniqueConstraint && !isLastAttempt) {
+        // Backoff nhẹ: 50ms, 150ms, 300ms — cho request đang thắng có time commit
+        const delayMs = 50 * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+async function doUpsert(
   data: ParsedBatchReport,
   sourceFile: string
 ): Promise<void> {
@@ -21,7 +48,6 @@ export async function upsertBatchReport(
         productName: data.productName,
       },
       update: {
-        // Cập nhật productCode/name nếu có (khi máy đầu tiên chưa có, máy sau có)
         ...(data.productCode ? { productCode: data.productCode } : {}),
         ...(data.productName ? { productName: data.productName } : {}),
       },
@@ -57,7 +83,6 @@ export async function upsertBatchReport(
           })
         ).id;
 
-    // Xoá và tạo lại steps (đơn giản, không cần diff)
     if (data.steps.length > 0) {
       await tx.step.deleteMany({ where: { machineRunId: runId } });
       await tx.step.createMany({
@@ -73,7 +98,6 @@ export async function upsertBatchReport(
       });
     }
 
-    // Cập nhật lại overall time trên batch (dựa vào tất cả machine runs của batch đó)
     const runs = await tx.machineRun.findMany({
       where: { batchNumber: data.batchNumber },
       select: { startTime: true, endTime: true },
