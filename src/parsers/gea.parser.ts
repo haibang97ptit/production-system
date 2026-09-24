@@ -1,4 +1,5 @@
 import { BatchReportParser } from './base.parser';
+import { NotABatchReportError } from './errors';
 import { ParsedBatchReport, ParsedStep } from '../types/batch.types';
 import {
   parseVnDateTime,
@@ -71,19 +72,33 @@ export class GeaBatchReportParser implements BatchReportParser {
       /\n([A-Z][A-Za-z0-9 ]+?)([A-Z]{2}\d{6,8})\nType:/
     );
     if (!machineMatch) {
-      throw new Error('Cannot parse machine header (Model + ProjectNumber)');
+      // File có structure của batch report nhưng machine header lỗi/thiếu
+      // → coi như junk/test file, mark ignored thay vì error
+      throw new NotABatchReportError('malformed machine header');
     }
     const machineType = machineMatch[1].trim();
     const machineId = machineMatch[2];
 
-    // Batch header: <Start><End><Batch><Recipe>
-    // Batch: alphanumeric + dấu "-" (VD: EN2603501, 250826, 001-02032022)
+    // Batch header có 2 layout PDF:
+    //   KIỂU A (CMi 400, HSG cũ): batch và recipe CÙNG dòng
+    //     "21-08-2026 17:52:0021-08-2026 18:01:38EN2603501MIDITEL 80 - R.GR..."
+    //   KIỂU B (CMi 1200 mới): batch cuối dòng, recipe DÒNG RIÊNG bên dưới
+    //     "24/03/2025 16:21:1424/03/2025 21:10:15250045-01\n"
+    //     "FREMEDOL FLU - R.GR0046 - V01"
+    //
+    // Batch: alphanumeric + dấu "-" (VD: EN2603501, 250826, 001-02032022, 250045-01)
+    // Lookahead:
+    //   - Kiểu A: [A-Z][A-Za-z] (2 chữ cái đầu recipe name, VD "MI", "Fr", "PL")
+    //   - Kiểu B: $ với flag 'm' (cuối dòng)
     const headerRegex = new RegExp(
-      `(${this.DATE_PATTERN})(${this.DATE_PATTERN})([A-Za-z0-9-]*[0-9-])(?=[A-Za-z])`
+      `(${this.DATE_PATTERN})(${this.DATE_PATTERN})([A-Za-z0-9-]+?)(?=[A-Z][A-Za-z]|$)`,
+      'm'
     );
     const headerMatch = text.match(headerRegex);
     if (!headerMatch) {
-      throw new Error('Cannot parse batch header line');
+      // Batch/recipe format không hợp lệ (VD: operator gõ bừa "qqqqppp", "sss")
+      // → coi như junk/test file, mark ignored
+      throw new NotABatchReportError('malformed batch header line');
     }
     const batchNumber = headerMatch[3];
 
