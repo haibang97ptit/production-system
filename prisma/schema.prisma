@@ -1,0 +1,83 @@
+// Prisma schema for Batch Report System
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Mỗi mẻ thuốc (batch) - 1 batch có thể chạy qua nhiều máy
+model Batch {
+  batchNumber          String        @id @map("batch_number")
+  productCode          String?       @map("product_code")
+  productName          String?       @map("product_name")
+  overallStartTime     DateTime?     @map("overall_start_time")
+  overallEndTime       DateTime?     @map("overall_end_time")
+  totalDurationSeconds Int?          @map("total_duration_seconds")
+  createdAt            DateTime      @default(now()) @map("created_at")
+  updatedAt            DateTime      @updatedAt @map("updated_at")
+
+  machineRuns          MachineRun[]
+
+  @@map("batches")
+  @@index([overallStartTime])
+}
+
+// Mỗi lần 1 máy chạy 1 batch = 1 record
+model MachineRun {
+  id                Int       @id @default(autoincrement())
+  batchNumber       String    @map("batch_number")
+  machineId         String    @map("machine_id")           // VD: CN018153, 35423
+  machineType       String    @map("machine_type")         // VD: CMi 400, P2020
+  processType       String?   @map("process_type")         // VD: Container Blending, Tabletting
+  operator          String?
+  startTime         DateTime  @map("start_time")
+  endTime           DateTime  @map("end_time")
+  durationSeconds   Int       @map("duration_seconds")
+  sourceFile        String    @map("source_file")          // Tên file PDF gốc
+  metadata          Json?                                   // Dữ liệu đặc thù từng máy (VD: producedTablets cho Fette)
+  parsedAt          DateTime  @default(now()) @map("parsed_at")
+
+  batch             Batch     @relation(fields: [batchNumber], references: [batchNumber], onDelete: Cascade)
+  steps             Step[]
+
+  @@map("machine_runs")
+  @@index([batchNumber])
+  @@index([machineId])
+  @@index([startTime])
+  @@unique([machineId, batchNumber, startTime])  // Tránh insert trùng
+}
+
+// Chi tiết các bước trong mỗi lần máy chạy (chỉ áp dụng cho máy có steps như CMi 400)
+model Step {
+  id                Int         @id @default(autoincrement())
+  machineRunId      Int         @map("machine_run_id")
+  stepCounter       Int         @map("step_counter")
+  stepName          String      @map("step_name")
+  startTime         DateTime    @map("start_time")
+  endTime           DateTime    @map("end_time")
+  durationSeconds   Int         @map("duration_seconds")
+  dataPoints        Int?        @map("data_points")
+
+  machineRun        MachineRun  @relation(fields: [machineRunId], references: [id], onDelete: Cascade)
+
+  @@map("steps")
+  @@index([machineRunId])
+}
+
+// Đánh dấu file đã được parse (tránh xử lý lại)
+model ParsedFile {
+  fileName    String   @id @map("file_name")
+  fileSize    Int      @map("file_size")
+  fileHash    String?  @map("file_hash")     // Có thể dùng MD5/SHA để phát hiện file bị sửa
+  parsedAt    DateTime @default(now()) @map("parsed_at")
+  status      String                          // 'success' | 'error'
+  errorMsg    String?  @map("error_msg")
+
+  @@map("parsed_files")
+  @@index([parsedAt])
+}

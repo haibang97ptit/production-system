@@ -1,0 +1,49 @@
+# Base compose - dùng chung cho cả dev (Windows) lẫn prod (Ubuntu)
+# Dev Windows local: docker compose -f docker-compose.yml -f docker-compose.dev-nas.yml up
+# Prod Ubuntu:       docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: batch-report-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-batchuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-batchpass}
+      POSTGRES_DB: ${POSTGRES_DB:-batch_reports}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-batchuser} -d ${POSTGRES_DB:-batch_reports}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: batch-report-app:latest
+    container_name: batch-report-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-batchuser}:${POSTGRES_PASSWORD:-batchpass}@postgres:5432/${POSTGRES_DB:-batch_reports}
+      REPORT_ROOT_DIR: /reports
+      SYNC_CRON: ${SYNC_CRON:-*/20 * * * *}
+      SYNC_ON_STARTUP: ${SYNC_ON_STARTUP:-true}
+      SYNC_CONCURRENCY: ${SYNC_CONCURRENCY:-5}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_KEY: ${API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      RATE_LIMIT_WINDOW_MINUTES: ${RATE_LIMIT_WINDOW_MINUTES:-15}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:

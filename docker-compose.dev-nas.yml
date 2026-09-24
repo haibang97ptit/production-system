@@ -1,0 +1,28 @@
+# PLAN B: Mount NAS trực tiếp qua CIFS ngay trên Windows Docker Desktop
+# Dùng khi Cách A (map ổ Z:\) không work do Docker Desktop không thấy ổ đã map
+#
+# Cách chạy:
+#   docker compose -f docker-compose.yml -f docker-compose.dev-nas.yml up --build
+#
+# File này dùng CIFS/SMB mount y hệt bên prod, hoạt động trên WSL2 backend của
+# Docker Desktop. Không cần map ổ Z:\, không cần thêm File Sharing.
+#
+# Credentials NAS lấy từ .env (NAS_HOST, NAS_SHARE, NAS_USER, NAS_PASS)
+
+services:
+  app:
+    volumes:
+      - nas-reports:/reports:ro
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+
+volumes:
+  nas-reports:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${NAS_HOST}/${NAS_SHARE}"
+      # vers=3.0 phù hợp Windows Server / NAS hiện đại
+      # nếu lỗi "mount error(112): Host is down" → thử hạ vers=2.0
+      o: "username=${NAS_USER},password=${NAS_PASS},vers=3.0,ro,uid=1000,gid=1000,iocharset=utf8,nobrl"

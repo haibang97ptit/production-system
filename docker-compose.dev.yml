@@ -1,0 +1,20 @@
+# Override cho môi trường DEV trên Windows local
+# Cách chạy:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Lưu ý: Docker Desktop trên Windows cần được cấp quyền "File sharing" tới ổ
+# chứa thư mục report. Vào Docker Desktop → Settings → Resources → File Sharing.
+#
+# Windows path mount vào container: chỉnh REPORT_HOST_DIR trong .env
+# VD Windows local: C:\BatchReports (đã copy từ NAS về)
+# VD ổ mạng đã map: Z:\BatchReports
+# VD UNC path:      \\<NAS_IP>\<share>\<folder>\Batch report
+
+services:
+  app:
+    volumes:
+      # ${REPORT_HOST_DIR} khai báo trong file .env
+      - "${REPORT_HOST_DIR}:/reports:ro"
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug

@@ -1,0 +1,23 @@
+# Đảm bảo shell script luôn dùng LF (Linux) kể cả khi dev trên Windows
+# Nếu không, entrypoint.sh checkout ra CRLF → container báo lỗi "syntax error"
+*.sh              text eol=lf
+docker/entrypoint.sh text eol=lf
+scripts/*.sh      text eol=lf
+
+# Text files bình thường
+*.ts              text
+*.js              text
+*.json            text
+*.md              text
+*.yml             text
+*.yaml            text
+*.prisma          text
+*.env.example     text
+Dockerfile        text
+
+# Binary files
+*.pdf             binary
+*.xlsx            binary
+*.png             binary
+*.jpg             binary
+*.gz              binary

@@ -1,0 +1,54 @@
+# Override cho PRODUCTION trên Ubuntu server
+# docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# CIFS mount trực tiếp qua Docker volume, không cần mount ở tầng OS.
+# Cần cài trước: sudo apt install cifs-utils
+
+services:
+  postgres:
+    # Production: bind port DB chỉ localhost để không expose ra ngoài
+    ports:
+      - "127.0.0.1:5432:5432"
+    # Resource limits để tránh OOM
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    volumes:
+      - nas-reports:/reports:ro
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      SYNC_ON_STARTUP: "false"  # prod không chạy sync ngay lúc startup, đợi cron
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  nas-reports:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${NAS_HOST}/${NAS_SHARE}"
+      # vers=3.0 phù hợp NAS/Windows Server hiện đại
+      # Nếu lỗi "mount error(112): Host is down" → thử vers=2.0
+      o: "username=${NAS_USER},password=${NAS_PASS},vers=3.0,ro,uid=1000,gid=1000,iocharset=utf8,nobrl"
