@@ -1,5 +1,4 @@
 import { BatchReportParser } from './base.parser';
-import { NotABatchReportError } from './errors';
 import { ParsedBatchReport, ParsedStep } from '../types/batch.types';
 import {
   parseVnDateTime,
@@ -72,9 +71,7 @@ export class GeaBatchReportParser implements BatchReportParser {
       /\n([A-Z][A-Za-z0-9 ]+?)([A-Z]{2}\d{6,8})\nType:/
     );
     if (!machineMatch) {
-      // File có structure của batch report nhưng machine header lỗi/thiếu
-      // → coi như junk/test file, mark ignored thay vì error
-      throw new NotABatchReportError('malformed machine header');
+      throw new Error('Cannot parse machine header (Model + ProjectNumber)');
     }
     const machineType = machineMatch[1].trim();
     const machineId = machineMatch[2];
@@ -96,9 +93,7 @@ export class GeaBatchReportParser implements BatchReportParser {
     );
     const headerMatch = text.match(headerRegex);
     if (!headerMatch) {
-      // Batch/recipe format không hợp lệ (VD: operator gõ bừa "qqqqppp", "sss")
-      // → coi như junk/test file, mark ignored
-      throw new NotABatchReportError('malformed batch header line');
+      throw new Error('Cannot parse batch header line');
     }
     const batchNumber = headerMatch[3];
 
