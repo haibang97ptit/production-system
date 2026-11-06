@@ -11,6 +11,7 @@ interface SyncStats {
   parsed: number;
   skipped: number;
   ignored: number;
+  pending: number;
   errors: number;
   durationMs: number;
 }
@@ -33,7 +34,12 @@ export function getLastSyncInfo(): {
  *  - parsed: parse thành công, lưu DB
  *  - skipped: đã parse trước, size không đổi
  *  - ignored: không phải batch report → đánh dấu, không xử lý lại
+ *  - pending: file vừa thay đổi (có thể đang copy dở) → để lượt sau
  *  - error: parse thất bại thật sự
+ *
+ * Khóa của file = đường dẫn tương đối so với REPORT_ROOT_DIR (VD "CMI400-01/abc.pdf"),
+ * để 2 máy sinh file trùng tên trong 2 thư mục con khác nhau không bị lẫn.
+ * File nằm ngay thư mục gốc có khóa = tên file, trùng dữ liệu cũ → không parse lại.
  */
 export async function syncReports(): Promise<SyncStats> {
   const startedAt = Date.now();
@@ -42,6 +48,7 @@ export async function syncReports(): Promise<SyncStats> {
     parsed: 0,
     skipped: 0,
     ignored: 0,
+    pending: 0,
     errors: 0,
     durationMs: 0,
   };
@@ -84,7 +91,7 @@ export async function syncReports(): Promise<SyncStats> {
   lastSyncStats = stats;
   lastSyncAt = new Date();
   logger.info(
-    `Sync done: scanned=${stats.scanned} parsed=${stats.parsed} skipped=${stats.skipped} ignored=${stats.ignored} errors=${stats.errors} (${stats.durationMs}ms)`
+    `Sync done: scanned=${stats.scanned} parsed=${stats.parsed} skipped=${stats.skipped} ignored=${stats.ignored} pending=${stats.pending} errors=${stats.errors} (${stats.durationMs}ms)`
   );
   return stats;
 }
@@ -94,13 +101,20 @@ async function processFile(
   alreadyProcessed: Map<string, { size: number; status: string }>,
   stats: SyncStats
 ): Promise<void> {
-  const fileName = path.basename(filePath);
+  const fileName = toFileKey(filePath);
   try {
     const stat = await fs.stat(filePath);
     const prev = alreadyProcessed.get(fileName);
 
     if (prev !== undefined && prev.size === stat.size) {
       stats.skipped++;
+      return;
+    }
+
+    // Robocopy tạo file đích và ghi dữ liệu trước, cuối cùng mới set lại giờ gốc.
+    // mtime quá mới = có thể đang copy dở → bỏ qua, lượt sync sau sẽ xử lý.
+    if (Date.now() - stat.mtimeMs < config.FILE_MIN_AGE_SECONDS * 1000) {
+      stats.pending++;
       return;
     }
 
@@ -159,6 +173,10 @@ async function processFile(
       });
     } catch {}
   }
+}
+
+function toFileKey(filePath: string): string {
+  return path.relative(config.REPORT_ROOT_DIR, filePath).split(path.sep).join('/');
 }
 
 async function findPdfFiles(dir: string): Promise<string[]> {

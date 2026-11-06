@@ -21,3 +21,8 @@ Dockerfile        text
 *.png             binary
 *.jpg             binary
 *.gz              binary
+
+# Script Windows chay tren may san xuat - bat buoc CRLF (file .bat dung LF co the chay sai goto/label)
+*.bat             text eol=crlf
+*.ps1             text eol=crlf
+*.vbs             text eol=crlf

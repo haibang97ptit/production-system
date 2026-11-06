@@ -21,6 +21,9 @@ const configSchema = z.object({
   // Giá trị lớn hơn = nhanh hơn nhưng tốn CPU/memory. Khuyến nghị: 5-10.
   SYNC_CONCURRENCY: z.coerce.number().min(1).max(50).default(5),
 
+  // Bỏ qua file vừa thay đổi trong N giây gần nhất (có thể đang được copy lên NAS)
+  FILE_MIN_AGE_SECONDS: z.coerce.number().min(0).default(60),
+
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
 
   // --- Security ---
