@@ -161,8 +161,12 @@ if (Get-ChildItem -LiteralPath $InstallDir) {
     & icacls.exe "$InstallDir\*" /reset /T /C /Q | Out-Null
 }
 
-Copy-Item -LiteralPath (Join-Path $SrcDir '02-copy-report.bat') -Destination $InstallDir -Force
-Copy-Item -LiteralPath (Join-Path $SrcDir 'run-hidden.vbs') -Destination $InstallDir -Force
+# Neu nguoi dung chay ngay tu C:\BatchReportTool thi file da o dung cho, khong copy de len chinh no
+$sameDir = ([IO.Path]::GetFullPath($SrcDir).TrimEnd('\') -ieq [IO.Path]::GetFullPath($InstallDir).TrimEnd('\'))
+if (-not $sameDir) {
+    Copy-Item -LiteralPath (Join-Path $SrcDir '02-copy-report.bat') -Destination $InstallDir -Force
+    Copy-Item -LiteralPath (Join-Path $SrcDir 'run-hidden.vbs') -Destination $InstallDir -Force
+}
 
 $configLines = @(
     '@echo off',

@@ -34,7 +34,10 @@ exit /b 2
 
 REM --- Kiem tra truy cap NAS (dung tai khoan da luu bang cmdkey cua user dang chay task) ---
 if exist "%NAS_ROOT%\" goto :nas_ok
-call :log ERROR "Khong vao duoc NAS: %NAS_ROOT% - kiem tra mang, hoac tai khoan da luu cho user [%USERNAME%] (cmdkey /list)"
+REM Lay thong bao loi goc cua Windows (sai mat khau / khong tim thay may chu / ...) de ghi vao log
+set "NAS_ERR=khong ro"
+for /f "delims=" %%E in ('dir "%NAS_ROOT%\" 2^>^&1 ^>nul') do set "NAS_ERR=%%E"
+call :log ERROR "Khong vao duoc NAS: %NAS_ROOT% - Windows bao: %NAS_ERR% - user chay task: %USERNAME%"
 exit /b 3
 :nas_ok
 
