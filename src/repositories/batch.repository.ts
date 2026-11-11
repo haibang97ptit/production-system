@@ -64,24 +64,36 @@ async function doUpsert(
       },
     });
 
-    const runId = existingRun
-      ? existingRun.id
-      : (
-          await tx.machineRun.create({
-            data: {
-              batchNumber: data.batchNumber,
-              machineId: data.machineId,
-              machineType: data.machineType,
-              processType: data.processType,
-              operator: data.operator,
-              startTime: data.startTime,
-              endTime: data.endTime,
-              durationSeconds: data.durationSeconds,
-              sourceFile,
-              metadata: data.metadata as object | undefined,
-            },
-          })
-        ).id;
+    // Cùng 1 lần chạy có thể được export nhiều lần (VD export khi đang chạy dở, rồi export lại
+    // khi xong). Chỉ giữ bản đầy đủ hơn = bản có giờ kết thúc muộn hơn (hoặc bằng: export lại y hệt).
+    // Bản cũ hơn đến sau (thứ tự đọc file không cố định) sẽ không ghi đè được.
+    const runFields = {
+      machineType: data.machineType,
+      processType: data.processType,
+      operator: data.operator,
+      endTime: data.endTime,
+      durationSeconds: data.durationSeconds,
+      sourceFile,
+      metadata: data.metadata as object | undefined,
+    };
+
+    let runId: number;
+    if (!existingRun) {
+      runId = (
+        await tx.machineRun.create({
+          data: {
+            batchNumber: data.batchNumber,
+            machineId: data.machineId,
+            startTime: data.startTime,
+            ...runFields,
+          },
+        })
+      ).id;
+    } else {
+      runId = existingRun.id;
+      if (data.endTime.getTime() < existingRun.endTime.getTime()) return; // bản cũ hơn → bỏ qua
+      await tx.machineRun.update({ where: { id: runId }, data: runFields });
+    }
 
     if (data.steps.length > 0) {
       await tx.step.deleteMany({ where: { machineRunId: runId } });

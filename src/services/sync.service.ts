@@ -19,6 +19,11 @@ interface SyncStats {
 let lastSyncStats: SyncStats | null = null;
 let lastSyncAt: Date | null = null;
 
+// Lượt sync đầu tiên sau khi khởi động sẽ kiểm tra lại các file "ignored":
+// parser có thể vừa được nâng cấp (VD thêm model máy mới) → file trước đây
+// không nhận dạng được giờ có thể đọc được. Deploy = restart = tự kiểm tra lại.
+let ignoredRecheckDone = false;
+
 export function getLastSyncInfo(): {
   stats: SyncStats | null;
   at: Date | null;
@@ -72,10 +77,12 @@ export async function syncReports(): Promise<SyncStats> {
   );
 
   // Load list file đã xử lý để skip
+  const skipStatuses = ignoredRecheckDone ? ['success', 'ignored'] : ['success'];
+  if (!ignoredRecheckDone) logger.info('First sync since startup: re-checking ignored files');
   const alreadyProcessed = new Map<string, { size: number; status: string }>(
     (
       await prisma.parsedFile.findMany({
-        where: { status: { in: ['success', 'ignored'] } },
+        where: { status: { in: skipStatuses } },
       })
     ).map((p) => [p.fileName, { size: p.fileSize, status: p.status }])
   );
@@ -86,6 +93,7 @@ export async function syncReports(): Promise<SyncStats> {
     const batch = pdfFiles.slice(i, i + concurrency);
     await Promise.all(batch.map((f) => processFile(f, alreadyProcessed, stats)));
   }
+  ignoredRecheckDone = true;
 
   stats.durationMs = Date.now() - startedAt;
   lastSyncStats = stats;

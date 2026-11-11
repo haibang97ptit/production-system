@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import pdfParse from 'pdf-parse';
 import { BatchReportParser } from './base.parser';
 import { GeaBatchReportParser } from './gea.parser';
-import { FetteP2020Parser } from './fette.parser';
+import { FetteParser } from './fette.parser';
 import { BlisterCP250Parser } from './blister.parser';
 import { ParsedBatchReport } from '../types/batch.types';
 import { logger } from '../utils/logger';
@@ -26,7 +26,7 @@ export class NotABatchReportError extends Error {
  */
 const parsers: BatchReportParser[] = [
   new GeaBatchReportParser(),
-  new FetteP2020Parser(),
+  new FetteParser(),
   new BlisterCP250Parser(),
 ];
 
