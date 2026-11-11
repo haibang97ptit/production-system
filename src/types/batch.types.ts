@@ -16,7 +16,7 @@ export interface ParsedBatchReport {
   endTime: Date;
   durationSeconds: number;
 
-  steps: ParsedStep[];          // Rỗng nếu máy không có khái niệm step (như Fette)
+  steps: ParsedStep[];          // Fette: các chế độ chạy (Setting/Standard/Test run). Rỗng nếu máy không có step
   metadata?: Record<string, unknown>;  // Dữ liệu đặc thù từng máy (VD: producedTablets)
 }
 
