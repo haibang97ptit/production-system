@@ -3,22 +3,46 @@ import { ParsedBatchReport, ParsedStep } from '../types/batch.types';
 import {
   parseVnDateTime,
   durationToSeconds,
-  detectDateFormat,
+  detectDateFormatStrict,
   DateFormat,
 } from '../utils/date.util';
 
+/** 1 sự kiện trong mục "Alarms & Events" */
+interface GeaEvent {
+  description: string;
+  type: string;
+  stamp: string; // chuỗi ngày giờ gốc, VD "11/12/2026  15:52:23"
+  user?: string; // người thực hiện, lấy từ đuôi "- by Dang Phat Vinh"
+}
+
+const EVENT_STAMP_LINE_RE = /^\s*(\d{1,2}[-./]\d{1,2}[-./]\d{4}\s+\d{1,2}:\d{2}:\d{2})\s*$/;
+
 /**
  * Parser GENERIC cho tất cả máy vendor GEA (dùng chung format báo cáo).
- * Hỗ trợ: CMi 400, CMi 1200, HSG PRO 200, GFB PRO 30, và mọi máy khác cùng format.
+ * Hỗ trợ: CMi 400, CMi 1200, HSG PRO 200/600, GFB PRO 30/60, GCSi 350, và mọi máy khác cùng format.
  *
  * Không hardcode model — tự động extract machineType/processType/dateFormat từ file.
  * Thêm máy GEA mới cùng format = KHÔNG phải sửa code.
+ *
+ * LƯU Ý ngày tháng: trong CÙNG 1 file, phần header/recipe và phần giờ step/sự kiện có thể
+ * dùng 2 định dạng khác nhau (VD GFB PRO 60: header "12/11/2026" = ngày/tháng, step
+ * "11/12/2026" = tháng/ngày). → Định dạng của giờ step/sự kiện được xác định riêng.
+ *
+ * Người thực hiện từng step: lấy từ các sự kiện "... - by <tên>" trong Alarms & Events,
+ * gán vào step theo thời gian.
  */
 export class GeaBatchReportParser implements BatchReportParser {
   readonly machineType = 'GEA (generic)';
 
   private readonly DATE_PATTERN =
     '\\d{1,2}[-./]\\d{1,2}[-./]\\d{4}\\s+\\d{1,2}:\\d{2}:\\d{2}';
+
+  private timingRegex(): RegExp {
+    return new RegExp(
+      `(${this.DATE_PATTERN})\\n(${this.DATE_PATTERN})\\n\\s*(\\d+:\\d{2}:\\d{2}|N/A)\\n\\s*Step Start Time:\\n\\s*Step End Time:\\n\\s*Step Duration:`,
+      'g'
+    );
+  }
 
   canParse(pdfText: string): boolean {
     return (
@@ -30,14 +54,21 @@ export class GeaBatchReportParser implements BatchReportParser {
   }
 
   parse(pdfText: string): ParsedBatchReport {
-    const dateFormat = detectDateFormat(pdfText);
-
     const general = this.parseGeneralInfo(pdfText);
-    const steps = this.parseSteps(pdfText, dateFormat);
+    const events = this.extractEvents(pdfText);
+    const stepStamps = [...pdfText.matchAll(this.timingRegex())].flatMap((m) => [m[1], m[2]]);
+    const stampFormat = this.detectStampFormat(
+      pdfText,
+      [...stepStamps, ...events.map((e) => e.stamp)],
+      stepStamps[0],
+      general.headerStart
+    );
 
+    const steps = this.parseSteps(pdfText, stampFormat);
     if (steps.length === 0) {
       throw new Error('GEA parser: could not extract any step');
     }
+    this.assignStepOperators(steps, events, stampFormat, general.operator);
 
     return {
       batchNumber: general.batchNumber,
@@ -55,6 +86,7 @@ export class GeaBatchReportParser implements BatchReportParser {
           1000
       ),
       steps,
+      metadata: general.batchEndUser ? { batchEndUser: general.batchEndUser } : undefined,
     };
   }
 
@@ -65,7 +97,9 @@ export class GeaBatchReportParser implements BatchReportParser {
     machineId: string;
     machineType: string;
     processType?: string;
-    operator?: string;
+    operator?: string; // Batch Start User
+    batchEndUser?: string;
+    headerStart: string; // "Start Date/Time" trên header (chuỗi gốc)
   } {
     const machineMatch = text.match(
       /\n([A-Z][A-Za-z0-9 ]+?)([A-Z]{2}\d{6,8})\nType:/
@@ -109,13 +143,18 @@ export class GeaBatchReportParser implements BatchReportParser {
     const productCodeMatch = text.match(/([A-Za-z0-9_-]+)\nProduct Code -:/);
     const productNameMatch = text.match(/([A-Za-z0-9 _-]+)\nProduct Name -:/);
 
+    // Dòng trước "Batch Start User:" là tên người bắt đầu + người kết thúc batch DÍNH LIỀN nhau:
+    //   "Dang Phat VinhDang Phat Vinh"   → bắt đầu = kết thúc = Dang Phat Vinh
+    //   "Mai Hoang ThoaiDang Phat Vinh"  → bắt đầu Mai Hoang Thoai, kết thúc Dang Phat Vinh
+    // Chỗ nối = chữ thường đứng liền chữ hoa (trong 1 tên các chữ luôn cách nhau dấu cách).
     const usersMatch = text.match(/([A-Za-z ]+)\nBatch Start User:/);
     let operator: string | undefined;
+    let batchEndUser: string | undefined;
     if (usersMatch) {
       const full = usersMatch[1].trim();
-      const half = full.length / 2;
-      if (full.length % 2 === 0 && full.slice(0, half) === full.slice(half)) {
-        operator = full.slice(0, half).trim();
+      const parts = full.split(/(?<=[a-z])(?=[A-Z])/).map((p) => p.trim());
+      if (parts.length === 2) {
+        [operator, batchEndUser] = parts;
       } else {
         operator = full;
       }
@@ -129,7 +168,120 @@ export class GeaBatchReportParser implements BatchReportParser {
       machineType,
       processType,
       operator,
+      batchEndUser,
+      headerStart: headerMatch[1],
     };
+  }
+
+  /**
+   * Xác định định dạng ngày của giờ step / sự kiện:
+   *  1. Trong chính các mốc đó có ngày > 12 hoặc tháng > 12 → biết chắc.
+   *  2. Không thì: xác định định dạng của phần còn lại (header, recipe...), đọc giờ bắt đầu
+   *     trên header, rồi chọn cách đọc giờ step đầu tiên cho kết quả GẦN header nhất.
+   *     VD header "12/11/2026 15:45:06" (ngày/tháng → 12/11), step "11/12/2026 15:45:12":
+   *     đọc tháng/ngày → 12/11 (lệch 6 giây) ✓, đọc ngày/tháng → 11/12 (lệch 1 tháng) ✗.
+   */
+  private detectStampFormat(
+    text: string,
+    stamps: string[],
+    firstStepStart: string | undefined,
+    headerStart: string
+  ): DateFormat {
+    const strict = detectDateFormatStrict(stamps.join('\n'));
+    if (strict) return strict;
+
+    let rest = text;
+    for (const s of new Set(stamps)) rest = rest.split(s).join(' ');
+    const headerFormat = detectDateFormatStrict(rest) ?? 'dd/mm';
+    if (!firstStepStart) return headerFormat;
+
+    const tryParse = (s: string, f: DateFormat): number | null => {
+      try {
+        return parseVnDateTime(s, f).getTime();
+      } catch {
+        return null;
+      }
+    };
+    const ref = tryParse(headerStart, headerFormat);
+    if (ref === null) return headerFormat;
+    const gap = (f: DateFormat) => {
+      const t = tryParse(firstStepStart, f);
+      return t === null ? Infinity : Math.abs(t - ref);
+    };
+    const ddGap = gap('dd/mm');
+    const mmGap = gap('mm/dd');
+    if (ddGap === mmGap) return headerFormat;
+    return ddGap < mmGap ? 'dd/mm' : 'mm/dd';
+  }
+
+  /**
+   * Đọc mục "Alarms & Events". Mỗi sự kiện trong text PDF có dạng:
+   *   <nội dung, có thể xuống nhiều dòng — bị cắt giữa chữ, VD "by D" + "ang Phat Vinh">
+   *   <loại sự kiện>            VD "Incoming Conf."
+   *   <ngày giờ>                VD "11/12/2026  15:52:23"
+   */
+  private extractEvents(text: string): GeaEvent[] {
+    const events: GeaEvent[] = [];
+    const sectionRe = /Alarms & Events\n([\s\S]*?)(?=Print Date\/Time:|$)/g;
+    for (const section of text.matchAll(sectionRe)) {
+      let buffer: string[] = [];
+      for (const line of section[1].split('\n')) {
+        const stamp = line.match(EVENT_STAMP_LINE_RE);
+        if (!stamp) {
+          buffer.push(line);
+          continue;
+        }
+        const type = (buffer.pop() ?? '').trim();
+        // Nối thẳng, không thêm dấu cách: PDF cắt dòng giữa chữ nhưng giữ nguyên dấu cách gốc
+        const description = buffer.join('').replace(/\s+/g, ' ').trim();
+        buffer = [];
+        if (!description) continue;
+        const user = description.match(/\s-\s*by\s+(.+?)\s*$/)?.[1];
+        events.push({ description, type, stamp: stamp[1], user });
+      }
+    }
+    return events;
+  }
+
+  /**
+   * operators của step = những người có sự kiện "- by <tên>" trong khoảng thời gian của step,
+   * theo thứ tự thời gian. Step không có sự kiện nào ghi tên → lấy người thao tác gần nhất
+   * ở step trước; step đầu tiên → người bắt đầu batch (Batch Start User).
+   * Sự kiện trước khi batch bắt đầu (VD xác nhận alarm từ sáng) không tính vào step nào.
+   */
+  private assignStepOperators(
+    steps: ParsedStep[],
+    events: GeaEvent[],
+    fmt: DateFormat,
+    batchStartUser?: string
+  ): void {
+    const userEvents = events
+      .filter((e) => e.user)
+      .map((e) => {
+        try {
+          return { time: parseVnDateTime(e.stamp, fmt).getTime(), user: e.user as string };
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is { time: number; user: string } => e !== null)
+      .sort((a, b) => a.time - b.time);
+
+    let lastKnown: string | undefined = batchStartUser;
+    steps.forEach((step, i) => {
+      const start = step.startTime.getTime();
+      const end = step.endTime.getTime();
+      const isLast = i === steps.length - 1;
+      const users = [
+        ...new Set(
+          userEvents
+            .filter((e) => e.time >= start && (e.time < end || (isLast && e.time === end)))
+            .map((e) => e.user)
+        ),
+      ];
+      step.operators = users.length > 0 ? users : lastKnown ? [lastKnown] : [];
+      if (users.length > 0) lastKnown = users[users.length - 1];
+    });
   }
 
   private parseSteps(text: string, dateFormat: DateFormat): ParsedStep[] {
@@ -146,10 +298,7 @@ export class GeaBatchReportParser implements BatchReportParser {
       }
     }
 
-    const timingRegex = new RegExp(
-      `(${this.DATE_PATTERN})\\n(${this.DATE_PATTERN})\\n\\s*(\\d+:\\d{2}:\\d{2}|N/A)\\n\\s*Step Start Time:\\n\\s*Step End Time:\\n\\s*Step Duration:`,
-      'g'
-    );
+    const timingRegex = this.timingRegex();
     const timings: { startTime: Date; endTime: Date; duration: string }[] = [];
     while ((m = timingRegex.exec(text)) !== null) {
       timings.push({

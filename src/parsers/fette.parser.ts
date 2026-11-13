@@ -280,7 +280,8 @@ export class FetteParser implements BatchReportParser {
     const sampleMs = samples.map((s) => s.getTime());
     return merged.map((s, i) => {
       const isLast = i === merged.length - 1; // mốc đúng lúc kết thúc batch tính cho step cuối
-      // operators: người bắt đầu step + mọi người có thao tác trong step, theo thứ tự thời gian
+      // operators: người bắt đầu step (người đổi chế độ chạy) đứng đầu,
+      // sau đó là những người khác có thao tác trong step, theo thứ tự thời gian
       const operators = uniqueInOrder([s.starter, ...this.actorsBetween(actions, s.start, s.end, isLast)]);
       return {
         stepCounter: i + 1,
@@ -290,7 +291,6 @@ export class FetteParser implements BatchReportParser {
         durationSeconds: Math.round((s.end - s.start) / 1000),
         dataPoints: sampleMs.filter((t) => t >= s.start && (t < s.end || (isLast && t === s.end)))
           .length,
-        operator: s.starter ?? operators[0],
         operators,
       };
     });

@@ -18,6 +18,14 @@ export type DateFormat = 'dd/mm' | 'mm/dd';
  * Nếu không detect được (mọi số ≤ 12) → default dd/mm (kiểu VN).
  */
 export function detectDateFormat(text: string): DateFormat {
+  return detectDateFormatStrict(text) ?? 'dd/mm';
+}
+
+/**
+ * Giống detectDateFormat nhưng trả null nếu không suy ra được (mọi ngày/tháng ≤ 12),
+ * để nơi gọi tự quyết định cách xử lý.
+ */
+export function detectDateFormatStrict(text: string): DateFormat | null {
   const datePattern = /(\d{1,2})([-./])(\d{1,2})\2\d{4}/g;
   let m: RegExpExecArray | null;
   while ((m = datePattern.exec(text)) !== null) {
@@ -26,7 +34,7 @@ export function detectDateFormat(text: string): DateFormat {
     if (p1 > 12) return 'dd/mm';
     if (p2 > 12) return 'mm/dd';
   }
-  return 'dd/mm';
+  return null;
 }
 
 /**

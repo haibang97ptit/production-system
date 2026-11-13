@@ -27,6 +27,5 @@ export interface ParsedStep {
   endTime: Date;
   durationSeconds: number;
   dataPoints?: number;
-  operator?: string;     // Người bắt đầu step
-  operators?: string[];  // Tất cả người có thao tác trong step (theo thứ tự thời gian)
+  operators?: string[];  // Người thực hiện step, theo thứ tự thời gian
 }
