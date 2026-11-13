@@ -62,6 +62,8 @@ model Step {
   endTime           DateTime    @map("end_time")
   durationSeconds   Int         @map("duration_seconds")
   dataPoints        Int?        @map("data_points")
+  operator          String?                                   // Người bắt đầu step (VD Fette: người đổi chế độ chạy)
+  operators         String[]    @default([])                  // Tất cả người có thao tác trong step, theo thứ tự thời gian
 
   machineRun        MachineRun  @relation(fields: [machineRunId], references: [id], onDelete: Cascade)
 

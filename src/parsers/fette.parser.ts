@@ -40,6 +40,8 @@ const RUN_CHANGE_RE =
   /^\s*(\d{2}:\d{2}:\d{2})\s+Change of run\s+.*?\[[A-Z]\]\s*(.+?)\s*->\s*\[[A-Z]\]\s*(.+?)\s*$/;
 // Chế độ máy nghỉ / chờ lệnh — không phải 1 giai đoạn sản xuất
 const IDLE_MODES = new Set(['computer run']);
+// 1 dòng Change report: "<giờ>  <loại sự kiện>  <nội dung>" (các cột cách nhau >= 2 dấu cách)
+const EVENT_LINE_RE = /^\s*(\d{2}:\d{2}:\d{2})\s{2,}(.+?)\s{2,}(.+?)\s*$/;
 
 interface MachineEvent {
   time: Date;
@@ -50,6 +52,28 @@ interface RunChange {
   time: Date;
   from: string;
   to: string;
+  user?: string;
+}
+
+interface UserAction {
+  time: Date;
+  user: string;
+}
+
+/**
+ * Lấy người thực hiện từ nội dung 1 dòng Change report:
+ *   "kimda.nguyen: [L] Standard run -> [J] Test run"  → kimda.nguyen (trước dấu ":")
+ *   "Operator level: 0 ->  7  kimda.nguyen"           → kimda.nguyen (cuối dòng)
+ */
+function extractActor(content: string): string | undefined {
+  const level = content.match(/^Operator level:.*?(\S+)$/);
+  if (level) return level[1];
+  return content.match(/^([^\s:]+):\s/)?.[1];
+}
+
+/** Danh sách không trùng, giữ thứ tự xuất hiện */
+function uniqueInOrder(items: (string | undefined)[]): string[] {
+  return [...new Set(items.filter((x): x is string => !!x))];
 }
 
 export class FetteParser implements BatchReportParser {
@@ -73,9 +97,15 @@ export class FetteParser implements BatchReportParser {
   parse(pdfText: string): ParsedBatchReport {
     const header = this.parseHeader(pdfText);
     const productBatch = this.parseProductBatch(pdfText);
-    const { events, runChanges, samples } = this.extractTimeline(pdfText);
+    const { events, runChanges, actions, samples } = this.extractTimeline(pdfText);
     const runWindow = this.computeRunWindow(events, samples);
-    const steps = this.buildModeSteps(runChanges, samples, runWindow);
+    const steps = this.buildModeSteps(runChanges, actions, samples, runWindow);
+    const runOperators = this.actorsBetween(
+      actions,
+      runWindow.startTime.getTime(),
+      runWindow.endTime.getTime(),
+      true
+    );
 
     return {
       batchNumber: productBatch.batchNumber,
@@ -84,7 +114,7 @@ export class FetteParser implements BatchReportParser {
       machineId: header.machineId,
       machineType: `Fette ${header.model}`,
       processType: 'Tabletting',
-      operator: header.operator,
+      operator: header.operator, // "Oper:" trên header = người export report
       startTime: runWindow.startTime,
       endTime: runWindow.endTime,
       durationSeconds: Math.round(
@@ -98,6 +128,7 @@ export class FetteParser implements BatchReportParser {
         runWindowSource: runWindow.source, // 'ON_OFF' | 'ON_LAST_EVENT' | 'PRODUCTION_SAMPLES'
         machineOnCount: events.filter((e) => e.type === 'ON').length,
         productionSamples: samples.length,
+        operators: runOperators, // Tất cả người thao tác máy trong thời gian chạy batch
       },
     };
   }
@@ -105,6 +136,7 @@ export class FetteParser implements BatchReportParser {
   private extractTimeline(text: string): {
     events: MachineEvent[];
     runChanges: RunChange[];
+    actions: UserAction[];
     samples: Date[];
   } {
     const dateFormat = detectDateFormat(text);
@@ -152,9 +184,10 @@ export class FetteParser implements BatchReportParser {
     pages: string[],
     reportDate: string,
     fmt: DateFormat
-  ): { events: MachineEvent[]; runChanges: RunChange[] } {
+  ): { events: MachineEvent[]; runChanges: RunChange[]; actions: UserAction[] } {
     const events: MachineEvent[] = [];
     const runChanges: RunChange[] = [];
+    const actions: UserAction[] = [];
     let currentDate = reportDate;
     for (const page of pages) {
       // Dòng tiêu đề "Change report" (dòng mục lục có dấu "....." nên không khớp)
@@ -165,25 +198,40 @@ export class FetteParser implements BatchReportParser {
           currentDate = d[1];
           continue;
         }
+        const ev = line.match(EVENT_LINE_RE);
+        if (!ev) continue;
+        const time = parseVnDateTime(`${currentDate} ${ev[1]}`, fmt);
+        const user = extractActor(ev[3]);
+        if (user) actions.push({ time, user });
+
         const e = line.match(MACHINE_EVENT_RE);
         if (e) {
-          events.push({
-            time: parseVnDateTime(`${currentDate} ${e[1]}`, fmt),
-            type: e[2] as 'ON' | 'OFF',
-          });
+          events.push({ time, type: e[2] as 'ON' | 'OFF' });
           continue;
         }
         const r = line.match(RUN_CHANGE_RE);
-        if (r) {
-          runChanges.push({
-            time: parseVnDateTime(`${currentDate} ${r[1]}`, fmt),
-            from: r[2],
-            to: r[3],
-          });
-        }
+        if (r) runChanges.push({ time, from: r[2], to: r[3], user });
       }
     }
-    return { events, runChanges };
+    return { events, runChanges, actions };
+  }
+
+  /** Những người có thao tác trong [start, end) (hoặc [start, end] nếu includeEnd), theo thứ tự thời gian */
+  private actorsBetween(
+    actions: UserAction[],
+    start: number,
+    end: number,
+    includeEnd: boolean
+  ): string[] {
+    return uniqueInOrder(
+      actions
+        .filter((a) => {
+          const t = a.time.getTime();
+          return t >= start && (t < end || (includeEnd && t === end));
+        })
+        .sort((a, b) => a.time.getTime() - b.time.getTime())
+        .map((a) => a.user)
+    );
   }
 
   /**
@@ -194,6 +242,7 @@ export class FetteParser implements BatchReportParser {
    */
   private buildModeSteps(
     runChanges: RunChange[],
+    actions: UserAction[],
     samples: Date[],
     runWindow: { startTime: Date; endTime: Date }
   ): ParsedStep[] {
@@ -202,42 +251,49 @@ export class FetteParser implements BatchReportParser {
     const runStart = runWindow.startTime.getTime();
     const runEnd = runWindow.endTime.getTime();
 
-    const segments: { name: string; start: number; end: number }[] = [];
+    type Segment = { name: string; start: number; end: number; starter?: string };
+    const segments: Segment[] = [];
     if (runStart < changes[0].time.getTime()) {
       segments.push({ name: changes[0].from, start: runStart, end: changes[0].time.getTime() });
     }
     changes.forEach((c, i) => {
       const start = c.time.getTime();
       const end = i + 1 < changes.length ? changes[i + 1].time.getTime() : Math.max(runEnd, start);
-      segments.push({ name: c.to, start, end });
+      // starter = người đổi máy sang chế độ này
+      segments.push({ name: c.to, start, end, starter: c.user });
     });
 
     // - Cắt theo thời gian chạy của batch: Change report có thể chứa sự kiện trước/sau batch
     //   (VD máy cài đặt cho batch sau nhưng chưa đổi số batch) → bỏ phần nằm ngoài.
     // - Bỏ chế độ nghỉ (Computer run) và đoạn dài 0 giây.
     // - Gộp 2 đoạn liền nhau cùng chế độ (log có thể ghi "Standard run -> Standard run").
-    const merged: { name: string; start: number; end: number }[] = [];
+    const merged: Segment[] = [];
     for (const seg of segments) {
       const start = Math.max(seg.start, runStart);
       const end = Math.min(seg.end, runEnd);
       if (end <= start || IDLE_MODES.has(seg.name.toLowerCase())) continue;
       const prev = merged[merged.length - 1];
       if (prev && prev.name === seg.name && prev.end === start) prev.end = end;
-      else merged.push({ name: seg.name, start, end });
+      else merged.push({ name: seg.name, start, end, starter: seg.starter });
     }
 
     const sampleMs = samples.map((s) => s.getTime());
-    return merged.map((s, i) => ({
+    return merged.map((s, i) => {
+      const isLast = i === merged.length - 1; // mốc đúng lúc kết thúc batch tính cho step cuối
+      // operators: người bắt đầu step + mọi người có thao tác trong step, theo thứ tự thời gian
+      const operators = uniqueInOrder([s.starter, ...this.actorsBetween(actions, s.start, s.end, isLast)]);
+      return {
         stepCounter: i + 1,
         stepName: s.name,
         startTime: new Date(s.start),
         endTime: new Date(s.end),
         durationSeconds: Math.round((s.end - s.start) / 1000),
-        // Mẫu đúng lúc kết thúc batch vẫn tính cho step cuối
-        dataPoints: sampleMs.filter(
-          (t) => t >= s.start && (t < s.end || (i === merged.length - 1 && t === s.end))
-        ).length,
-      }));
+        dataPoints: sampleMs.filter((t) => t >= s.start && (t < s.end || (isLast && t === s.end)))
+          .length,
+        operator: s.starter ?? operators[0],
+        operators,
+      };
+    });
   }
 
   private extractProductionSamples(

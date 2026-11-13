@@ -106,6 +106,8 @@ async function doUpsert(
           endTime: s.endTime,
           durationSeconds: s.durationSeconds,
           dataPoints: s.dataPoints,
+          operator: s.operator,
+          operators: s.operators ?? [],
         })),
       });
     }
